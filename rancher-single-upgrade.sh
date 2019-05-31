@@ -97,7 +97,7 @@ docker ps | grep -E "rancher/rancher:|rancher/rancher " &>/dev/null
 checkpipecmd "Failed to find a running Rancher container with image rancher/rancher, aborting script!" 1
 
 RANCHERSERVER=$(docker ps | grep -E "rancher/rancher:|rancher/rancher " | awk '{ print $1 }')
-echo "${red}Providing full output of 'docker ps' for reference.${reset}"
+echo "${green}Providing full output of 'docker ps' for reference.${reset}"
 docker ps
 echo
 echo "${red}${RANCHERSERVER} ${green}<- Is this the Rancher server container that we are upgrading?${reset}"
@@ -152,7 +152,7 @@ echo "${red}Creating rancher-data container${reset}"
 docker create --volumes-from ${RANCHERSERVER} --name rancher-data rancher/rancher:${CURRENT_RANCHER_VERSION}
 checkpipecmd "Error while creating Rancher data container, aborting script!"
 
-echo "${red}Creating archive of rancher-data in working directory, file name: rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz${reset}"
+echo "${red}Creating archive of rancher-data in working directory, filename: ${green}rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz${reset}"
 docker run --volumes-from rancher-data -v $PWD:/backup alpine tar zcvf /backup/rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz /var/lib/rancher >/dev/null
 checkpipecmd "Creation of /backup/rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz has failed, aborting script!"
 
