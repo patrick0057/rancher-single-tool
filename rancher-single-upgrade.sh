@@ -4,28 +4,33 @@ green=$(tput setaf 2)
 reset=$(tput sgr0)
 START_TIME=$(date +%Y-%m-%d--%H%M%S)
 SCRIPT_NAME="rancher-single-upgrade.sh"
+RANCHER_IMAGE_NAME="rancher/rancher"
 function helpmenu() {
-    echo "Usage: ./checkfix-certs.sh [-y]
--y  Script will automatically install all dependencies
--f  Force option will cause script to delete rancher-data container if it exists
--v <new_rancher_version>  This will set the version of Rancher to upgrade to.
-    If this is left blank the upgrade will fill in your current version automatically.
-    This is useful for situations where you need to make changes to your Rancher
-    deployment but don't want to upgrade to a newer version.
+    echo "Usage: ./checkfix-certs.sh
+
+-y                          Script will automatically install all dependencies
+
+-f                          Force option will cause script to delete rancher-data container if it exists
+
+-v <new_rancher_version>    This will set the version of Rancher to upgrade to.  If this is left blank the upgrade will fill in your current version automatically.  This is useful for situations where you need to make changes to your Rancher deployment but don't want to upgrade to a newer version.
         Usage Example: ./${SCRIPT_NAME} -v v2.2.3
--d <docker options>  This will pass docker options to the docker run command. 
-    Options must be surrounded by double quotes.
+
+-d <docker options>         This will pass docker options to the docker run command.  Options must be surrounded by double quotes.  If you pass \"default\" the script will use the options shown in the usage example below.  Do not add \"--volumes-from rancher-data\" in this command, it is always added for you.
         Usage Example: ./${SCRIPT_NAME} -d \"-d --restart=unless-stopped -p 80:80 -p 443:443\"
--r <rancher options>  This will pass rancher options to the rancher container.
-    Options must be surrounded by double quotes.
+
+-r <rancher options>        This will pass rancher options to the rancher container.  Options must be surrounded by double quotes.
         Usage Example: ./${SCRIPT_NAME} -r \"--acme-domain super.secret.rancher.instal.local\"
+
+-s <ssl hostname>           This will renew your SSL certificates with a newly generated set good for 10 years upon upgrade.  When using this command you will also have to apply a kubectl yaml for each preexisting cluster in order for your downstream clusters to be upgraded properly.  You will receive a print out of commands to run on one controlplane node of each cluster attached to your Rancher installation.
+        Usage Example: ./${SCRIPT_NAME} -s vps.rancherserver.com
 "
     exit 1
 }
 #TODO
 #Add SSL regenerate section, in order to prevent duplication of work I will create a CFSSL script that can be called for this.
 #Add confirmation logic for docker run command
-while getopts "hyfd:r:v:" opt; do
+#Add restore task
+while getopts "hyfs:d:r:v:" opt; do
     case ${opt} in
     h) # process option h
         helpmenu
@@ -37,8 +42,19 @@ while getopts "hyfd:r:v:" opt; do
         NEW_VERSION=$OPTARG
         echo "${green}New Rancher version set to: ${red}${NEW_VERSION}${reset}"
         ;;
+    s) # process option s: renew SSL for ten years
+        REGENERATE_SELF_SIGNED="-v /etc/rancherssl/certs/cert.pem:/etc/rancher/ssl/cert.pem -v /etc/rancherssl/certs/key.pem:/etc/rancher/ssl/key.pem -v /etc/rancherssl/certs/ca.pem:/etc/rancher/ssl/cacerts.pem"
+        RANCHER_SSL_HOSTNAME="$OPTARG"
+        echo "${green}SSL regenerate has been set, the following options will be added to your docker run command:
+        ${red}${REGENERATE_SELF_SIGNED}${reset}"
+        echo "${green}SSL hostname set to: ${red}${RANCHER_SSL_HOSTNAME}${reset}"
+        ;;
     d) # process option d: set docker options
-        DOCKER_OPTIONS=$OPTARG
+        if [[ "$OPTARG" == "default" ]]; then
+            DOCKER_OPTIONS="-d --restart=unless-stopped -p 80:80 -p 443:443"
+        else
+            DOCKER_OPTIONS=$OPTARG
+        fi
         echo "${green}Docker options set to: ${red}${DOCKER_OPTIONS}${reset}"
         ;;
     r) # process option r: set docker options
@@ -84,7 +100,7 @@ function checkpipecmd() {
     fi
 }
 #pre-flight checks
-if [[ ${FORCE_OPTION} == 'yes' ]]; then
+if [[ "${FORCE_OPTION}" == 'yes' ]]; then
     docker inspect rancher-data &>/dev/null
     if [[ $? -eq 0 ]]; then
         echo ${red}rancher-data container detected, deleting because option -f was passed.${reset}
@@ -92,11 +108,16 @@ if [[ ${FORCE_OPTION} == 'yes' ]]; then
     fi
 
 fi
+if [[ "${RANCHER_SSL_HOSTNAME}" != "" ]]; then
+    echo "${red}Generating new 10-year SSL certificates for your Rancher installation.${reset}"
+    docker run -v /etc/rancherssl/certs:/certs -e CA_SUBJECT="Generic CA" -e CA_EXPIRE="3650" -e SSL_EXPIRE="3650" -e SSL_SUBJECT="${RANCHER_SSL_HOSTNAME}" -e SSL_DNS="${RANCHER_SSL_HOSTNAME}" -e SILENT="true" patrick0057/genericssl
+    checkpipecmd "Failed to generate certificates from docker image patrick0057"
+fi
 
-docker ps | grep -E "rancher/rancher:|rancher/rancher " &>/dev/null
-checkpipecmd "Failed to find a running Rancher container with image rancher/rancher, aborting script!" 1
+docker ps | grep -E "${RANCHER_IMAGE_NAME}:|${RANCHER_IMAGE_NAME} " &>/dev/null
+checkpipecmd "Failed to find a running Rancher container with image ${RANCHER_IMAGE_NAME}, aborting script!" 1
 
-RANCHERSERVER=$(docker ps | grep -E "rancher/rancher:|rancher/rancher " | awk '{ print $1 }')
+RANCHERSERVER=$(docker ps | grep -E "${RANCHER_IMAGE_NAME}:|${RANCHER_IMAGE_NAME} " | awk '{ print $1 }')
 echo "${green}Providing full output of 'docker ps' for reference.${reset}"
 docker ps
 echo
@@ -116,7 +137,7 @@ else
         echo
         echo "${green}No problem, please select your rancher server ID from the above output.${reset}"
         read RANCHERSERVER
-        echo "${red}${RANCHERSERVER} ${green}<- Is this correct?${reset}"
+        echo "${red}${RANCHERSERVER}${green} <- Is this correct?${reset}"
         yesno
         echo
     done
@@ -149,20 +170,22 @@ docker stop ${RANCHERSERVER}
 checkpipecmd "Error while stopping Rancher container, aborting script!"
 
 echo "${red}Creating rancher-data container${reset}"
-docker create --volumes-from ${RANCHERSERVER} --name rancher-data rancher/rancher:${CURRENT_RANCHER_VERSION}
+docker create --volumes-from ${RANCHERSERVER} --name rancher-data ${RANCHER_IMAGE_NAME}:${CURRENT_RANCHER_VERSION}
 checkpipecmd "Error while creating Rancher data container, aborting script!"
 
-echo "${red}Creating archive of rancher-data in working directory, filename: ${green}rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz${reset}"
-docker run --volumes-from rancher-data -v $PWD:/backup alpine tar zcvf /backup/rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz /var/lib/rancher >/dev/null
-checkpipecmd "Creation of /backup/rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz has failed, aborting script!"
+RANCHER_BACKUP_ARCHIVE="rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz"
 
-echo "${green}Checking existence of tar.gz archive with ls.${reset}"
-ls -lash rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz
+echo "${red}Creating archive of rancher-data in working directory, filename: ${green}${RANCHER_BACKUP_ARCHIVE}${reset}"
+docker run --volumes-from rancher-data -v $PWD:/backup alpine tar zcvf /backup/${RANCHER_BACKUP_ARCHIVE} /var/lib/rancher >/dev/null
+checkpipecmd "Creation of /backup/${RANCHER_BACKUP_ARCHIVE} has failed, aborting script!"
 
-echo "${red}Pulling rancher/rancher:${NEW_VERSION} before launching the new Rancher container.${reset}"
-docker pull rancher/rancher:${NEW_VERSION}
-checkpipecmd "Image pull for rancher/rancher:${NEW_VERSION} has failed, aborting script!"
+echo "${green}Checking existence of ${RANCHER_BACKUP_ARCHIVE} archive with ls -lash.${reset}"
+ls -lash ${RANCHER_BACKUP_ARCHIVE}
+
+echo "${red}Pulling ${RANCHER_IMAGE_NAME}:${NEW_VERSION} before launching the new Rancher container.${reset}"
+docker pull ${RANCHER_IMAGE_NAME}:${NEW_VERSION}
+checkpipecmd "Image pull for ${RANCHER_IMAGE_NAME}:${NEW_VERSION} has failed, aborting script!"
 
 echo "${red}Launching the new Rancher container.${reset}"
-docker run ${DOCKER_OPTIONS} ${REGENERATE_SELF_SIGNED} rancher/rancher:${NEW_VERSION} ${RANCHER_OPTIONS}
+docker run --volumes-from rancher-data ${DOCKER_OPTIONS} ${REGENERATE_SELF_SIGNED} ${RANCHER_IMAGE_NAME}:${NEW_VERSION} ${RANCHER_OPTIONS}
 checkpipecmd "Unable to start new Rancher container, aborting script!"
