@@ -6,7 +6,7 @@ START_TIME=$(date +%Y-%m-%d--%H%M%S)
 SCRIPT_NAME="rancher-single-upgrade.sh"
 RANCHER_IMAGE_NAME="rancher/rancher"
 function helpmenu() {
-    echo "Usage: ./checkfix-certs.sh
+    echo "Usage: ${SCRIPT_NAME}
 
 -y                          Script will automatically install all dependencies
 
@@ -27,7 +27,6 @@ function helpmenu() {
     exit 1
 }
 #TODO
-#Add SSL regenerate section, in order to prevent duplication of work I will create a CFSSL script that can be called for this.
 #Add confirmation logic for docker run command
 #Add restore task
 while getopts "hyfs:d:r:v:" opt; do
