@@ -29,6 +29,7 @@ function helpmenu() {
 #TODO
 #Add confirmation logic for docker run command
 #Add restore task
+#NEED TO ADD LOGIC FOR WHEN -d is not defined
 while getopts "hyfs:d:r:v:" opt; do
     case ${opt} in
     h) # process option h
@@ -105,7 +106,9 @@ if [[ "${FORCE_OPTION}" == 'yes' ]]; then
         echo ${red}rancher-data container detected, deleting because option -f was passed.${reset}
         docker rm -f rancher-data
     fi
-
+fi
+if [[ $DOCKER_OPTIONS == "" ]]; then
+    DOCKER_OPTIONS="-d --restart=unless-stopped -p 80:80 -p 443:443"
 fi
 if [[ "${RANCHER_SSL_HOSTNAME}" != "" ]]; then
     echo "${red}Generating new 10-year SSL certificates for your Rancher installation.${reset}"
