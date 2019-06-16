@@ -137,6 +137,15 @@ while getopts "hyfxeiI:c:b:t:s:d:r:v:" opt; do
         grecho "SSL regenerate has been set, the following options will be added to your docker run command:
         ${red}${SSLVOLUMES}"
         grecho "SSL hostname set to: ${red}${RANCHER_SSL_HOSTNAME}"
+        echo
+        echo
+        grecho "If you have used option -s against a Rancher installation with clusters attached to it, you might need to redeploy the cluster agent's YAML file if your clusters are in an unavailable state.  Please use the following script on one of the ${red}controlplane${green} nodes of each cluster."
+        grecho "https://github.com/patrick0057/cluster-agent-tool"
+        echo
+        grecho "Usage Example on a ${red}controlplane${green} node (will prompt you for local admin password):"
+        grecho "curl -LO https://github.com/patrick0057/cluster-agent-tool/raw/master/cluster-agent-tool.sh"
+        grecho "bash cluster-agent-tool.sh -fya'save' -u'admin'"
+        echo
         ;;
     d) # process option d: set docker options
         if [[ "$OPTARG" == "default" ]]; then
@@ -676,11 +685,16 @@ if [[ "${TASK}" == "restore" ]]; then
         echo
         response=''
         grecho "Do you want to restore your backup to a new Rancher container that matches the version of your backup?"
-        if [[ "${FORCE_OPTION}" != "yes" ]]; then
-            yesno
+        if [[ "${BACKUP_FILE_VERSION}" == "v0.0.0" ]]; then
+            recho "!!!IMPORTANT!!! ${green}Backup file version detected as ${red}v0.0.0${green}!  Answering \"no\" to the above question for you.  If the version of the Rancher container you are restoring to doesn't work properly with this backup then please pick a version that matches your backup file on the next attempt.  v0.0.0 is usually set in the backup filename when recovering a docker volume with -i.  The script has no way of knowing what version the backup file was.  When in doubt, use the latest stable version. ${red}!!!IMPORTANT!!!"
+            response='n'
         else
-            grecho "Force option -f detected, automatically setting your response to ${red}\"yes\""
-            response='y'
+            if [[ "${FORCE_OPTION}" != "yes" ]]; then
+                yesno
+            else
+                grecho "Force option -f detected, automatically setting your response to ${red}\"yes\""
+                response='y'
+            fi
         fi
         shopt -s nocasematch
         if [[ "${response}" == "y" ]]; then
