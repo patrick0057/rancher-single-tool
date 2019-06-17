@@ -53,6 +53,11 @@ RANCHER_IMAGE_NAME="rancher/rancher"
 LOGFILE="${SCRIPT_NAME}-${START_TIME}.log"
 DEFAULT_DOCKER_OPTIONS="-d --restart=unless-stopped -p 80:80 -p 443:443"
 DEFAULT_RANCHER_OPTIONS=""
+DEFAULT_D_AUDITLOGPATH="--env=AUDIT_LOG_PATH=/var/log/auditlog/rancher-api-audit.log"
+DEFAULT_D_AUDITLOGMAXAGE="--env=AUDIT_LOG_MAXAGE=10"
+DEFAULT_D_AUDITLOGMAXBACKUP="--env=AUDIT_LOG_MAXBACKUP=10"
+DEFAULT_D_AUDITLOGMAXSIZE="--env=AUDIT_LOG_MAXSIZE=100"
+DEFAULT_D_AUDITLEVEL="--env=AUDIT_LEVEL=0"
 function helpmenu() {
     grecho "Usage: ${SCRIPT_NAME}
 
@@ -81,9 +86,10 @@ function helpmenu() {
 -d <docker options>         This will pass docker options to the docker run command.  Options must be surrounded by double quotes.  If you pass \"default\" the script will use the options shown in the usage example below.  Do not add \"--volumes-from rancher-data\" in this command, it is always added for you.
         Usage Example: bash ${SCRIPT_NAME} -d \"${DEFAULT_DOCKER_OPTIONS}\"
 
--r <rancher options>        This will pass rancher options to the rancher container.  Options must be surrounded by double quotes.
+-r <rancher options>        This will pass rancher options to the rancher container.  Options must be surrounded by double quotes.  If you set this to \"none\" then the script will explicitely set the rancher options to \"\".  This is useful for when you are using -f and your container previously had rancher options set that you no longer wish to have set.
         Usage Example: bash ${SCRIPT_NAME} -r \"--acme-domain super.secret.rancher.install.local\"
         Usage Example: bash ${SCRIPT_NAME} -r \"--no-cacerts\"
+        Usage Example: bash ${SCRIPT_NAME} -r \"none\"
 
 -s <ssl hostname>           This will renew your SSL certificates with a newly generated set good for 10 years upon upgrade.  When using this command you will also have to apply a kubectl yaml for each preexisting cluster in order for your downstream clusters to be upgraded properly.  You will receive a print out of commands to run on one controlplane node of each cluster attached to your Rancher installation.
         Usage Example: bash ${SCRIPT_NAME} -s vps.rancherserver.com
@@ -333,6 +339,7 @@ function getrancherversion() {
 function gen10yearcerts() {
     if [[ "${RANCHER_SSL_HOSTNAME}" != "" ]]; then
         recho "Generating new 10-year SSL certificates for your Rancher installation."
+        echo docker run -v /etc/rancherssl/certs:/certs -e CA_SUBJECT="Generic CA" -e CA_EXPIRE="3650" -e SSL_EXPIRE="3650" -e SSL_SUBJECT="${RANCHER_SSL_HOSTNAME}" -e SSL_DNS="${RANCHER_SSL_HOSTNAME}" -e SILENT="true" patrick0057/genericssl
         docker run -v /etc/rancherssl/certs:/certs -e CA_SUBJECT="Generic CA" -e CA_EXPIRE="3650" -e SSL_EXPIRE="3650" -e SSL_SUBJECT="${RANCHER_SSL_HOSTNAME}" -e SSL_DNS="${RANCHER_SSL_HOSTNAME}" -e SILENT="true" patrick0057/genericssl
         checkpipecmd "Failed to generate certificates from docker image patrick0057/genericssl"
     fi
@@ -363,6 +370,7 @@ function stopandbackuprancher() {
     RANCHER_BACKUP_ARCHIVE="rancher-data-backup-${CURRENT_RANCHER_VERSION}-${START_TIME}.tar.gz"
 
     recho "Creating archive of rancher-data in working directory, filename: ${green}${RANCHER_BACKUP_ARCHIVE}"
+    echo docker run --rm --volumes-from rancher-data -v $PWD:/backup alpine tar zcvf /backup/${RANCHER_BACKUP_ARCHIVE} /var/lib/rancher \&\>backup-${LOGFILE}
     docker run --rm --volumes-from rancher-data -v $PWD:/backup alpine tar zcvf /backup/${RANCHER_BACKUP_ARCHIVE} /var/lib/rancher &>backup-${LOGFILE}
     checkpipecmd "Creation of /backup/${RANCHER_BACKUP_ARCHIVE} has failed, aborting script!"
 
@@ -400,27 +408,77 @@ function installrancher() {
     fi
 
     recho "Launching the new Rancher container."
+    echo "docker run ${DOCKER_OPTIONS} ${SSLVOLUMES} ${RANCHER_IMAGE_NAME}:${NEW_VERSION} ${RANCHER_OPTIONS}"
+    echo docker run ${DOCKER_OPTIONS} ${SSLVOLUMES} ${RANCHER_IMAGE_NAME}:${NEW_VERSION} ${RANCHER_OPTIONS}
     NEW_RANCHERSERVER=$(docker run ${DOCKER_OPTIONS} ${SSLVOLUMES} ${RANCHER_IMAGE_NAME}:${NEW_VERSION} ${RANCHER_OPTIONS})
+
     checkpipecmd "Unable to start new Rancher container, aborting script!"
 }
 
 function detectoptions() {
+    echo docker run --rm -v /var/run/docker.sock:/var/run/docker.sock patrick0057/runlike ${RANCHERSERVER}
     RUNLIKE=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock patrick0057/runlike ${RANCHERSERVER})
+    R_REGEX="(?! --| -)[\s=]+[\w|\d|\.|\/|\-\"\']+"
     if [[ "$?" == "0" ]]; then
         #DOCKER OPTIONS
         PORTS=$(grep -P -o -- "-p\s\d+:\d+" <<<${RUNLIKE})
         RESTART_POLICY=$(grep -P -o -- "--restart=[\w|-]+" <<<${RUNLIKE})
+
         #If we passed -s then we are overriding whatever is set for SSL volumes.
         if [[ ${SSLVOLUMES// /} == "" ]]; then
             SSLVOLUMES=$(grep -P -o -- "--volume=[\/|\w\.]+:\/etc\/rancher\/ssl\/[cert|key|cacerts]+\.pem" <<<${RUNLIKE})
         fi
-        AUTO_DOCKER_OPTIONS="-d ${PORTS} ${RESTART_POLICY} ${SSLVOLUMES}"
+
+        #set var then check if it matches default values, if it does then unset it
+        D_AUDITLOGPATH=$(grep -P -o -- "--env=AUDIT_LOG_PATH${R_REGEX}" <<<${RUNLIKE})
+        if [[ "${D_AUDITLOGPATH}" == "${DEFAULT_D_AUDITLOGPATH}" ]]; then
+            D_AUDITLOGPATH=""
+        fi
+
+        #set var then check if it matches default values, if it does then unset it
+        D_AUDITLOGMAXAGE=$(grep -P -o -- "--env=AUDIT_LOG_MAXAGE${R_REGEX}" <<<${RUNLIKE})
+        if [[ "${D_AUDITLOGMAXAGE}" == "${DEFAULT_D_AUDITLOGMAXAGE}" ]]; then
+            D_AUDITLOGMAXAGE=""
+        fi
+
+        #set var then check if it matches default values, if it does then unset it
+        D_AUDITLOGMAXBACKUP=$(grep -P -o -- "--env=AUDIT_LOG_MAXBACKUP${R_REGEX}" <<<${RUNLIKE})
+        if [[ "${D_AUDITLOGMAXBACKUP}" == "${DEFAULT_D_AUDITLOGMAXBACKUP}" ]]; then
+            D_AUDITLOGMAXBACKUP=""
+        fi
+
+        #set var then check if it matches default values, if it does then unset it
+        D_AUDITLOGMAXSIZE=$(grep -P -o -- "--env=AUDIT_LOG_MAXSIZE${R_REGEX}" <<<${RUNLIKE})
+        if [[ "${D_AUDITLOGMAXSIZE}" == "${DEFAULT_D_AUDITLOGMAXSIZE}" ]]; then
+            D_AUDITLOGMAXSIZE=""
+        fi
+
+        #set var then check if it matches default values, if it does then unset it
+        D_AUDITLEVEL=$(grep -P -o -- "--env=AUDIT_LEVEL${R_REGEX}" <<<${RUNLIKE})
+        if [[ "${D_AUDITLEVEL}" == "${DEFAULT_D_AUDITLEVEL}" ]]; then
+            D_AUDITLEVEL=""
+        fi
+
+        AUTO_DOCKER_OPTIONS="-d ${PORTS} ${RESTART_POLICY} ${D_AUDITLOGPATH} ${D_AUDITLOGMAXAGE} ${D_AUDITLOGMAXBACKUP} ${D_AUDITLOGMAXSIZE} ${D_AUDITLEVEL} ${SSLVOLUMES}"
         #replace newlines with spaces
         AUTO_DOCKER_OPTIONS=${AUTO_DOCKER_OPTIONS//$'\n'/ }
         #RANCHER OPTIONS
-        ACME_DOMAIN=$(grep -P -o -- "--acme-domain[\s=]+[\w|\d|\.]+" <<<${RUNLIKE})
+        R_REGEX="(?! --)[\s=]+[\w|\d|\.|\/|\-\"\']+"
+        ACME_DOMAIN=$(grep -P -o -- "--acme-domain${R_REGEX}" <<<${RUNLIKE})
         NO_CACERTS=$(grep -P -o -- "--no-cacerts" <<<${RUNLIKE})
-        AUTO_RANCHER_OPTIONS="${ACME_DOMAIN} ${NO_CACERTS}"
+        R_AUDITLOG=$(grep -P -o -- "--audit-level${R_REGEX}" <<<${RUNLIKE})
+        R_AUDITLOGMAXSIZE=$(grep -P -o -- "--audit-log-maxsize${R_REGEX}" <<<${RUNLIKE})
+        R_AUDITLOGMAXBACKUP=$(grep -P -o -- "--audit-log-maxbackup${R_REGEX}" <<<${RUNLIKE})
+        R_AUDITLOGMAXAGE=$(grep -P -o -- "--audit-log-maxage${R_REGEX}" <<<${RUNLIKE})
+        R_AUDITLOGPATH=$(grep -P -o -- "--audit-log-path${R_REGEX}" <<<${RUNLIKE})
+        R_LOGFORMAT=$(grep -P -o -- "--log-format${R_REGEX}" <<<${RUNLIKE})
+        R_K8SMODE=$(grep -P -o -- "--k8s-mode${R_REGEX}" <<<${RUNLIKE})
+        R_HTTPSLISTENPORT=$(grep -P -o -- "--https-listen-port${R_REGEX}" <<<${RUNLIKE})
+        R_HTTPLISTENPORT=$(grep -P -o -- "--http-listen-port${R_REGEX}" <<<${RUNLIKE})
+        R_ADDLOCAL=$(grep -P -o -- "--add-local${R_REGEX}" <<<${RUNLIKE})
+        R_DEBUG=$(grep -P -o -- "--debug" <<<${RUNLIKE})
+        R_KUBECONFIG=$(grep -P -o -- "--kubeconfig${R_REGEX}" <<<${RUNLIKE})
+        AUTO_RANCHER_OPTIONS="${ACME_DOMAIN} ${NO_CACERTS} ${R_AUDITLOG} ${R_AUDITLOGMAXSIZE} ${R_AUDITLOGMAXBACKUP} ${R_AUDITLOGMAXAGE} ${R_AUDITLOGPATH} ${R_LOGFORMAT} ${R_K8SMODE} ${R_HTTPSLISTENPORT} ${R_HTTPLISTENPORT} ${R_ADDLOCAL} ${R_DEBUG} ${R_KUBECONFIG}"
         #replace newlines with spaces
         AUTO_RANCHER_OPTIONS=${AUTO_RANCHER_OPTIONS//$'\n'/ }
     else
@@ -442,16 +500,29 @@ function setoptions() {
                 DOCKER_OPTIONS=${AUTO_DOCKER_OPTIONS}
             fi
         fi
-        if [[ "${RANCHER_OPTIONS// /}" == "" ]]; then
-            if [[ "${TASK}" != "install" ]]; then
-                grecho "Force option -f detected with no ${red}Rancher${green} options set, automatically setting these for you based on your old container options."
-                detectoptions
-                RANCHER_OPTIONS=${AUTO_RANCHER_OPTIONS}
-            else
-                grecho "Force option -f detected with no ${red}Rancher${green} options set, automatically setting these to defaults:"
-                grecho "Default options: ${red}\"${DEFAULT_RANCHER_OPTIONS}\""
-                AUTO_RANCHER_OPTIONS="${DEFAULT_RANCHER_OPTIONS}"
-                RANCHER_OPTIONS=${AUTO_RANCHER_OPTIONS}
+        #set case insensitive here
+        shopt -s nocasematch
+        #Give user a way to explicitly set rancher options back to ""
+        if [[ "${RANCHER_OPTIONS// /}" == "none" ]]; then
+        #unset case insensitive
+        shopt -u nocasematch
+
+            RANCHER_OPTIONS=""
+        else
+        #unset case insensitive
+        shopt -u nocasematch
+
+            if [[ "${RANCHER_OPTIONS// /}" == "" ]]; then
+                if [[ "${TASK}" != "install" ]]; then
+                    grecho "Force option -f detected with no ${red}Rancher${green} options set, automatically setting these for you based on your old container options."
+                    detectoptions
+                    RANCHER_OPTIONS=${AUTO_RANCHER_OPTIONS}
+                else
+                    grecho "Force option -f detected with no ${red}Rancher${green} options set, automatically setting these to defaults:"
+                    grecho "Default options: ${red}\"${DEFAULT_RANCHER_OPTIONS}\""
+                    AUTO_RANCHER_OPTIONS="${DEFAULT_RANCHER_OPTIONS}"
+                    RANCHER_OPTIONS=${AUTO_RANCHER_OPTIONS}
+                fi
             fi
         fi
     else
@@ -720,6 +791,7 @@ if [[ "${TASK}" == "restore" ]]; then
     fi
 
     recho "Running restore command.  Results of command can be found in restore-${LOGFILE}"
+    echo docker run --rm --volumes-from ${RANCHERSERVER} -v $PWD:/backup alpine sh -c "rm /var/lib/rancher/* -rf  && tar zxvf /backup/${BACKUPFILEPATH}" /backup/${RANCHER_BACKUP_ARCHIVE} /var/lib/rancher \&\>restore-${LOGFILE}
     docker run --rm --volumes-from ${RANCHERSERVER} -v $PWD:/backup alpine sh -c "rm /var/lib/rancher/* -rf  && tar zxvf /backup/${BACKUPFILEPATH}" /backup/${RANCHER_BACKUP_ARCHIVE} /var/lib/rancher &>restore-${LOGFILE}
     checkpipecmd "Restore failed!  Aborting script!"
 
@@ -771,6 +843,7 @@ if [[ "${TASK}" == "upgrade" ]]; then
     checkpipecmd "Image pull for ${RANCHER_IMAGE_NAME}:${NEW_VERSION} has failed, aborting script!"
 
     recho "Launching the new Rancher container."
+    echo docker run --volumes-from rancher-data ${DOCKER_OPTIONS} ${RANCHER_IMAGE_NAME}:${NEW_VERSION} ${RANCHER_OPTIONS}
     docker run --volumes-from rancher-data ${DOCKER_OPTIONS} ${RANCHER_IMAGE_NAME}:${NEW_VERSION} ${RANCHER_OPTIONS}
     checkpipecmd "Unable to start new Rancher container, aborting script!"
 
